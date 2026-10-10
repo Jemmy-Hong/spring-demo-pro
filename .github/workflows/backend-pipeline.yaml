@@ -127,7 +127,7 @@ jobs:
     environment: qa # GitHub仓库内提前创建qa环境，并开启Required reviewers人工审批
     env:
       ENV_NAME: qa
-      EKS_CLUSTER: ${{ env.EKS_CLUSTER_DEV_QA }} # qa环境使用dev/qa共享集群
+      EKS_CLUSTER: ${{ env.EKS_CLUSTER_QA }} # qa环境使用dev/qa共享集群
       NAMESPACE: qa                              # qa环境独立namespace
       IMAGE_TAG: ${{ needs.build-image.outputs.IMAGE_TAG }} # 复用上游job输出的镜像tag
     steps:
