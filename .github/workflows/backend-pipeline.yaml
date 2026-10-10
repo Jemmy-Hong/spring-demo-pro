@@ -27,14 +27,14 @@ permissions:
   id-token: write
   contents: read
 
-# ---------- 全局环境变量(可被各job内部的env覆盖) ----------
+# ---------- 全局环境变量(固定静态字符串，无互相引用，规避yaml解析报错) ----------
 env:
   AWS_REGION: ap-southeast-1       # AWS区域，和EKS集群、ECR镜像仓库保持一致
-  ECR_REPO: hy-demo-project        # ECR仓库名(去掉域名前缀)，👈替换为你的仓库名
+  ECR_REGISTRY: 650708167380.dkr.ecr.ap-southeast-1.amazonaws.com # ECR仓库域名，不带仓库名！
+  ECR_REPO: hy-demo-project        # ECR后端仓库名(去掉域名前缀)，👈替换为你的仓库名
   EKS_CLUSTER_DEV: eks-demo     # dev、qa环境共用的EKS集群名称，👈替换
-  EKS_CLUSTER_QA: eks-demo     # dev、qa环境共用的EKS集群名称，👈替换
-  EKS_CLUSTER_PROD: eks-prod       # prod生产环境独立EKS集群名称，👈替换
-  ECR_REGISTRY: 650708167380.dkr.ecr.ap-southeast-1.amazonaws.com/hy-frontend-repo  # ECR镜像仓库完整域名地址
+  EKS_CLUSTER_QA: eks-demo      # dev、qa环境共用的EKS集群名称，👈替换
+  EKS_CLUSTER_PROD: eks-prod    # prod生产环境独立EKS集群名称，👈替换
 
 jobs:
   # Job1：构建镜像，只执行一次，后面所有环境复用这同一个镜像，保证多环境镜像一致性
@@ -72,14 +72,14 @@ jobs:
           TAG: ${{ github.sha }}
         run: |
           docker build -f deploy/docker/Dockerfile \
-                       -t ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${{ env.TAG }} .
+                       -t ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${TAG} .
 
       # 6. 将构建完成的镜像推送到ECR镜像仓库保存
       - name: Push image to ECR
         env:
           TAG: ${{ github.sha }}
         run: |
-          docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${{ env.TAG }}
+          docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${TAG}
 
   # Job2：部署 dev 环境，自动执行，无需人工审批；依赖build-image构建成功才运行
   deploy-dev:
@@ -87,9 +87,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ENV_NAME: dev
-      EKS_CLUSTER: ${{ env.EKS_CLUSTER_DEV }} # dev环境使用dev/qa共享集群
-      NAMESPACE: dev                            # dev环境使用独立namespace
-      IMAGE_TAG: ${{ needs.build-image.outputs.IMAGE_TAG }} # 复用上游job输出的镜像tag
+      NAMESPACE: dev
     steps:
       # 检出代码，读取kustomize配置文件（deploy/k8s/overlays）
       - name: Checkout
@@ -102,17 +100,19 @@ jobs:
           role-to-assume: arn:aws:iam::168824777132:role/github-actions-eks
           aws-region: ${{ env.AWS_REGION }}
 
-      # 更新kubeconfig，把当前runner的kubectl上下文切换到dev/qa集群
+      # 更新kubeconfig，把当前runner的kubectl上下文切换到dev集群
       - name: Update kubeconfig for dev/qa cluster
         run: |
-          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_DEV }} --region ${{ env.AWS_REGION }}
 
       # Kustomize渲染overlay配置，动态替换镜像名称，直接apply到k8s
       # --image backend-app=xxx：替换kustomize内backend-app占位镜像为ECR完整镜像地址
       - name: Deploy with Kustomize
+        env:
+          IMAGE_TAG: ${{ needs.build-image.outputs.IMAGE_TAG }}
         run: |
           kubectl kustomize deploy/k8s/overlays/${{ env.ENV_NAME }} \
-          --image backend-app=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${{ env.IMAGE_TAG }} \
+          --image backend-app=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${IMAGE_TAG} \
           | kubectl apply -f -
 
       # 校验Deployment滚动更新是否成功，等待pod就绪，超时5分钟
@@ -127,9 +127,7 @@ jobs:
     environment: qa # GitHub仓库内提前创建qa环境，并开启Required reviewers人工审批
     env:
       ENV_NAME: qa
-      EKS_CLUSTER: ${{ env.EKS_CLUSTER_QA }} # qa环境使用dev/qa共享集群
-      NAMESPACE: qa                              # qa环境独立namespace
-      IMAGE_TAG: ${{ needs.build-image.outputs.IMAGE_TAG }} # 复用上游job输出的镜像tag
+      NAMESPACE: qa # qa环境独立namespace
     steps:
       # 检出代码，读取kustomize overlay配置
       - name: Checkout
@@ -149,9 +147,11 @@ jobs:
 
       # Kustomize渲染qa overlay，替换镜像地址，部署到qa命名空间
       - name: Deploy with Kustomize
+        env:
+          IMAGE_TAG: ${{ needs.build-image.outputs.IMAGE_TAG }}
         run: |
           kubectl kustomize deploy/k8s/overlays/${{ env.ENV_NAME }} \
-          --image backend-app=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${{ env.IMAGE_TAG }} \
+          --image backend-app=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${IMAGE_TAG} \
           | kubectl apply -f -
 
       # 等待Deployment滚动更新完成，校验pod就绪状态
@@ -166,9 +166,7 @@ jobs:
     environment: prod # GitHub仓库内提前创建prod环境，并开启Required reviewers人工审批
     env:
       ENV_NAME: prod
-      EKS_CLUSTER: ${{ env.EKS_CLUSTER_PROD }} # prod使用独立的生产EKS集群
-      NAMESPACE: prod                          # prod独立namespace
-      IMAGE_TAG: ${{ needs.build-image.outputs.IMAGE_TAG }} # 复用上游job输出的镜像tag
+      NAMESPACE: prod    # prod独立namespace
     steps:
       # 检出代码，读取kustomize overlay配置
       - name: Checkout
@@ -188,9 +186,11 @@ jobs:
 
       # Kustomize渲染prod overlay，替换镜像地址，部署到prod集群prod命名空间
       - name: Deploy with Kustomize
+        env:
+          IMAGE_TAG: ${{ needs.build-image.outputs.IMAGE_TAG }}
         run: |
           kubectl kustomize deploy/k8s/overlays/${{ env.ENV_NAME }} \
-          --image backend-app=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${{ env.IMAGE_TAG }} \
+          --image backend-app=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${IMAGE_TAG} \
           | kubectl apply -f -
 
       # 等待生产环境Deployment滚动更新完成，校验pod就绪状态
