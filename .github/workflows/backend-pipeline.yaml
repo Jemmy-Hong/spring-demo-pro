@@ -34,7 +34,7 @@ env:
   EKS_CLUSTER_DEV: eks-demo     # dev、qa环境共用的EKS集群名称，👈替换
   EKS_CLUSTER_QA: eks-demo     # dev、qa环境共用的EKS集群名称，👈替换
   EKS_CLUSTER_PROD: eks-prod       # prod生产环境独立EKS集群名称，👈替换
-  ECR_REGISTRY: 168824777132.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com   # ECR镜像仓库完整域名地址
+  ECR_REGISTRY: 650708167380.dkr.ecr.ap-southeast-1.amazonaws.com/hy-frontend-repo  # ECR镜像仓库完整域名地址
 
 jobs:
   # Job1：构建镜像，只执行一次，后面所有环境复用这同一个镜像，保证多环境镜像一致性
