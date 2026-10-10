@@ -1,13 +1,12 @@
 # ==============================================================================
 # 文件: .github/workflows/backend-deploy.yml
-# 用途: Spring Boot 后端 GitHub Action 流水线：登录ECR → 构建镜像 → 推送ECR → 部署EKS
-# 流程: build镜像 → push到ECR → 用该镜像tag部署到EKS (三段式标准做法)
-# 触发: 推送到 main(生产) 或其他分支时触发，多环境靠分支判断
+# 用途: Spring Boot 后端 GitHub Action 流水线：构建镜像 → 推送ECR → 部署EKS
+# 流程: build镜像 → dev自动部署(无需审批) → qa人工审批部署 → prod人工审批部署
+# 触发: 推送到 main(生产) / dev(开发)分支触发流水线，多环境靠分支判断
 # 架构说明：
-#   dev/qa 共享同一个EKS集群，不同namespace
-#   prod 使用独立EKS集群，独立namespace
-#   使用Kustomize overlays管理多环境配置，和前端项目结构保持一致
-# 流水线执行顺序：构建镜像 → dev自动部署(无需审批) → qa人工审批部署 → prod人工审批部署
+#   dev/qa 共享同一个EKS集群eks-demo，使用不同namespace做环境隔离
+#   prod 使用独立EKS集群eks-prod，独立namespace
+#   使用Kustomize overlays管理多环境配置，和前端项目目录结构保持一致
 # ==============================================================================
 name: Backend Spring boot CI/CD Pipeline
 
@@ -17,87 +16,99 @@ on:
     branches:
       - main          # main分支(生产)推送触发流水线
       - dev           # dev分支(开发)推送触发流水线
-      - 'release/**'  # release分支(预发/qa)可选，按需开启
   workflow_dispatch:  # 支持手动在GitHub页面点"Run workflow"，手动触发流水线
 
-# ---------- 权限(OIDC方式获取AWS临时凭证，推荐，比存长期AK安全) ----------
-# id-token: write：用于OIDC联邦身份认证，获取临时AWS凭证
-# contents: read：允许读取仓库代码，用于checkout检出代码
+# ---------- 权限配置 ----------
 permissions:
-  id-token: write
-  contents: read
+  contents: read     # 允许读取仓库代码，用于checkout检出代码
 
-# ---------- 全局环境变量(固定静态字符串，无互相引用，规避yaml解析报错) ----------
+# ---------- 全局环境变量(固定静态字符串) ----------
 env:
   AWS_REGION: ap-southeast-1       # AWS区域，和EKS集群、ECR镜像仓库保持一致
-  ECR_REGISTRY: 650708167380.dkr.ecr.ap-southeast-1.amazonaws.com # ECR仓库域名，不带仓库名！
   ECR_REPO: hy-demo-project        # ECR后端仓库名(去掉域名前缀)，👈替换为你的仓库名
   EKS_CLUSTER_DEV: eks-demo     # dev、qa环境共用的EKS集群名称，👈替换
   EKS_CLUSTER_QA: eks-demo      # dev、qa环境共用的EKS集群名称，👈替换
   EKS_CLUSTER_PROD: eks-prod    # prod生产环境独立EKS集群名称，👈替换
+  NAMESPACE_DEV: dev
+  NAMESPACE_QA: qa
+  NAMESPACE_PROD: prod
+  IMAGE_TAG: ${{ github.sha }} # 使用git commit sha作为镜像tag，便于追溯镜像版本
 
 jobs:
   # Job1：构建镜像，只执行一次，后面所有环境复用这同一个镜像，保证多环境镜像一致性
-  build-image:
+  build:
     runs-on: ubuntu-latest   # 使用Ubuntu虚拟机作为流水线运行环境
     outputs:
-      IMAGE_TAG: ${{ steps.set-tag.outputs.IMAGE_TAG }} # 输出镜像tag，供下游部署job引用
+      ECR_REGISTRY: ${{ steps.export-registry.outputs.ECR_REGISTRY }}
+      IMAGE_TAG: ${{ env.IMAGE_TAG }}
     steps:
-      # 1. 检出代码(必须，拉取当前仓库源码，用于构建后端镜像)
+      # 1. 检出代码(必须，拉取当前仓库源码，用于构建后端Docker镜像)
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. 设置镜像Tag，使用git commit完整sha作为镜像标签，便于代码版本追溯
-      - name: Set Image Tag (commit sha)
-        id: set-tag
-        run: echo "IMAGE_TAG=${{ github.sha }}" >> $GITHUB_OUTPUT
-
-      # 3. 配置AWS临时凭证，基于OIDC联邦认证，无需在GitHub存储长期AK/SK
+      # 2. 配置AWS凭证，当前采用AK/SK模式，和前端流水线保持统一；生产环境推荐OIDC联邦认证
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::168824777132:role/github-actions-eks  # 👈替换为你自己的OIDC IAM Role ARN
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # 4. 登录AWS ECR镜像仓库，后续才能推送构建好的docker镜像
-      - name: Login to ECR
-        run: |
-          aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
-          docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
+      # 3. 登录AWS ECR镜像仓库，使用官方action，和前端完全一致，自动获取registry地址
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
-      # 5. 构建Docker镜像，Dockerfile路径 deploy/docker/Dockerfile
-      # 镜像名称：ECR仓库地址 + 仓库名 + commit sha标签
+      # 4. 提取ECR Registry地址，保存到output输出变量，传递给下游部署job使用
+      - name: Export registry output
+        id: export-registry
+        run: echo "ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}" >> $GITHUB_OUTPUT
+
+      # 5. 构建Docker镜像，基于deploy/docker目录下Dockerfile打包SpringBoot后端镜像
       - name: Build Docker image
         env:
-          TAG: ${{ github.sha }}
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
           docker build -f deploy/docker/Dockerfile \
-                       -t ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${TAG} .
+                       -t $ECR_REGISTRY/${{ env.ECR_REPO }}:${{ env.IMAGE_TAG }} .
 
-      # 6. 将构建完成的镜像推送到ECR镜像仓库保存
-      - name: Push image to ECR
+      # 可选：Trivy漏洞扫描，后端业务镜像风险更高，推荐保留
+      # 扫描CRITICAL/HIGH级别高危漏洞，发现高危漏洞直接终止流水线，不会推送镜像，安全左移
+      - name: Scan image for vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ env.IMAGE_TAG }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      # 6. 将构建完成的后端镜像推送到ECR镜像仓库保存，供EKS部署拉取
+      - name: Push Docker image to ECR
         env:
-          TAG: ${{ github.sha }}
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${TAG}
+          docker push $ECR_REGISTRY/${{ env.ECR_REPO }}:${{ env.IMAGE_TAG }}
 
-  # Job2：部署 dev 环境，自动执行，无需人工审批；依赖build-image构建成功才运行
-  deploy-dev:
-    needs: build-image
+  # Job2：部署 dev 环境，自动执行，无需人工审批；依赖build镜像构建成功才运行
+  dev:
+    needs: build
+    # 条件：仅dev分支执行；workflow_dispatch手动触发时也允许执行
+    if: github.ref == 'refs/heads/dev' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    environment: dev # github environment，dev环境不设置审批人，自动执行，和前端对齐
     env:
       ENV_NAME: dev
-      NAMESPACE: dev
     steps:
       # 检出代码，读取kustomize配置文件（deploy/k8s/overlays）
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 配置AWS临时凭证，OIDC联邦认证
+      # 配置AWS AK/SK凭证，和build阶段保持一致
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::168824777132:role/github-actions-eks
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
       # 更新kubeconfig，把当前runner的kubectl上下文切换到dev集群
@@ -109,35 +120,38 @@ jobs:
       # --image backend-app=xxx：替换kustomize内backend-app占位镜像为ECR完整镜像地址
       - name: Deploy with Kustomize
         env:
-          IMAGE_TAG: ${{ needs.build-image.outputs.IMAGE_TAG }}
+          ECR_REGISTRY: ${{ needs.build.outputs.ECR_REGISTRY }}
+          IMAGE_TAG: ${{ needs.build.outputs.IMAGE_TAG }}
         run: |
           kubectl kustomize deploy/k8s/overlays/${{ env.ENV_NAME }} \
-          --image backend-app=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${IMAGE_TAG} \
+          --image backend-app=${ECR_REGISTRY}/${{ env.ECR_REPO }}:${IMAGE_TAG} \
           | kubectl apply -f -
 
       # 校验Deployment滚动更新是否成功，等待pod就绪，超时5分钟
       - name: Verify rollout status
         run: |
-          kubectl rollout status deployment/hy-demo-project -n ${{ env.NAMESPACE }} --timeout=300s
+          kubectl rollout status deployment/hy-demo-project -n ${{ env.NAMESPACE_DEV }} --timeout=300s
 
   # Job3：部署 qa 环境，必须人工审批，依赖dev部署成功后，才会进入等待审批状态
   deploy-qa:
-    needs: deploy-dev
+    needs: dev
+    # 条件：仅dev分支执行；workflow_dispatch手动触发时也允许执行
+    if: github.ref == 'refs/heads/dev' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: qa # GitHub仓库内提前创建qa环境，并开启Required reviewers人工审批
     env:
       ENV_NAME: qa
-      NAMESPACE: qa # qa环境独立namespace
     steps:
       # 检出代码，读取kustomize overlay配置
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 配置AWS临时OIDC凭证
+      # 配置AWS AK/SK凭证，和前面job保持一致
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::168824777132:role/github-actions-eks
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
       # 更新kubeconfig，切换kubectl上下文到dev/qa集群
@@ -148,35 +162,38 @@ jobs:
       # Kustomize渲染qa overlay，替换镜像地址，部署到qa命名空间
       - name: Deploy with Kustomize
         env:
-          IMAGE_TAG: ${{ needs.build-image.outputs.IMAGE_TAG }}
+          ECR_REGISTRY: ${{ needs.build.outputs.ECR_REGISTRY }}
+          IMAGE_TAG: ${{ needs.build.outputs.IMAGE_TAG }}
         run: |
           kubectl kustomize deploy/k8s/overlays/${{ env.ENV_NAME }} \
-          --image backend-app=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${IMAGE_TAG} \
+          --image backend-app=${ECR_REGISTRY}/${{ env.ECR_REPO }}:${IMAGE_TAG} \
           | kubectl apply -f -
 
       # 等待Deployment滚动更新完成，校验pod就绪状态
       - name: Verify rollout status
         run: |
-          kubectl rollout status deployment/hy-demo-project -n ${{ env.NAMESPACE }} --timeout=300s
+          kubectl rollout status deployment/hy-demo-project -n ${{ env.NAMESPACE_QA }} --timeout=300s
 
   # Job4：部署 prod 环境，人工审批，依赖qa部署成功后，进入等待审批状态
   deploy-prod:
     needs: deploy-qa
+    # 条件：仅main分支执行；workflow_dispatch手动触发时也允许执行
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: prod # GitHub仓库内提前创建prod环境，并开启Required reviewers人工审批
     env:
       ENV_NAME: prod
-      NAMESPACE: prod    # prod独立namespace
     steps:
       # 检出代码，读取kustomize overlay配置
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 配置AWS临时OIDC凭证
+      # 配置AWS AK/SK凭证，和前面job保持一致
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::168824777132:role/github-actions-eks
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
       # 更新kubeconfig，切换kubectl上下文到prod独立集群
@@ -187,23 +204,24 @@ jobs:
       # Kustomize渲染prod overlay，替换镜像地址，部署到prod集群prod命名空间
       - name: Deploy with Kustomize
         env:
-          IMAGE_TAG: ${{ needs.build-image.outputs.IMAGE_TAG }}
+          ECR_REGISTRY: ${{ needs.build.outputs.ECR_REGISTRY }}
+          IMAGE_TAG: ${{ needs.build.outputs.IMAGE_TAG }}
         run: |
           kubectl kustomize deploy/k8s/overlays/${{ env.ENV_NAME }} \
-          --image backend-app=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${IMAGE_TAG} \
+          --image backend-app=${ECR_REGISTRY}/${{ env.ECR_REPO }}:${IMAGE_TAG} \
           | kubectl apply -f -
 
       # 等待生产环境Deployment滚动更新完成，校验pod就绪状态
       - name: Verify rollout status
         run: |
-          kubectl rollout status deployment/hy-demo-project -n ${{ env.NAMESPACE }} --timeout=300s
+          kubectl rollout status deployment/hy-demo-project -n ${{ env.NAMESPACE_PROD }} --timeout=300s
 
 # ==============================================================================
 # 📝 备注
-# 1. 多环境: main→prod, dev→dev, 通过分支判断给 ENV/DEPLOYMENT_REPLICAS 赋不同值
-# 2. 配置文件已打包在jar内，deployment.yaml设置SPRING_PROFILES_ACTIVE=${ENV_NAME}，自动加载对应 application-{env}.yml
+# 1. 多环境分支逻辑：dev分支执行 build → deploy-dev(自动) → deploy-qa(审批)；main分支只执行 build → deploy-prod(审批)
+# 2. SpringBoot配置：deployment.yaml设置SPRING_PROFILES_ACTIVE=${ENV_NAME}，自动加载 application-{env}.yml
 # 3. 镜像tag使用 ${github.sha}(commit hash)，可回溯到具体代码提交版本，方便排障与回滚
-# 4. OIDC role权限要求：ECR读写权限 + 两个EKS集群(eks-demo、eks-prod)的kubectl操作权限，记得在AWS配置信任关系
-# 5. 敏感配置(DB密码、密钥等)不要硬编码写在yaml，使用AWS SecretManager/ParameterStore，勿写明文到workflow或代码仓库
-# 6. GitHub侧准备工作：仓库Settings -> Environments，手动创建qa、prod环境，开启审批人
+# 4. IAM权限要求：ECR读写权限 + 两个EKS集群(eks-demo、eks-prod)的kubectl操作权限
+# 5. 敏感配置(DB密码、密钥等)不要硬编码写在yaml，使用AWS SecretManager/ParameterStore，禁止明文提交仓库
+# 6. GitHub侧准备工作：仓库Settings -> Environments，手动创建dev、qa、prod环境；qa/prod开启审批人，dev不开启审批
 # ==============================================================================
