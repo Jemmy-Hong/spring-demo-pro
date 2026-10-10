@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+namespace: qa # kustomize会把所有资源自动注入这个namespace, 真实情况需要改动，首先考察是多集群/单集群多个namespace。
+
+replicas:
+  - name: hy-portal-site
+    count: 1
+
+# 给资源打上环境标签 qa
+labels:
+  - includeTemplates: true
+    pairs:
+      environment: qa
+
+images:
+  - name: frontend-img
+    newName: temp-ci-will-override
+    newTag: placeholder

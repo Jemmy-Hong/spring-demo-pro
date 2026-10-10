@@ -1,0 +1,191 @@
+# ==============================================================================
+# 文件: deployment-backend-user-service.yaml
+# 模式: DaemonSet Fluent-Bit 全局采集(云原生标准做法)
+#      业务SpringBoot日志输出 stdout 控制台，不写本地磁盘 /data/logs
+#      由集群中【每节点一个的 Fluent-Bit DaemonSet】从容器stdout统一采集上送
+# 前提: 集群已部署 DaemonSet Fluent-Bit; 如需HPA需部署 metrics-server
+# 优势: 业务容器不挂卷、不写盘，扩缩容零额外采集器，多副本日志天然聚合
+# CI变量: DEPLOYMENT_REPLICAS、TAG、${ENV}
+# ==============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hy-demo-project
+  namespace: default  # 生产建议改为独立业务命名空间(如 backend-xxx)
+  labels:
+    # k8s标准标签，监控、日志、告警、链路追踪统一识别，生产强烈建议
+    app.kubernetes.io/name: hy-demo-project   # 应用名称
+    app.kubernetes.io/instance: hy-demo-project # 实例名称，一套部署一个instance
+    app.kubernetes.io/component: backend        # 组件类型：backend(后端)
+    app.kubernetes.io/part-of: hy-business           # 归属业务系统，按业务聚合筛选
+    environment: ${ENV}           # 环境标识 dev/test/prod，CI注入
+spec:
+  replicas: DEPLOYMENT_REPLICAS   # 副本数，由CI替换，不要硬编码
+  # apps/v1强制必填，selector标签和pod模板labels严格匹配
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hy-demo-project
+  # 滚动更新策略：先拉起新Pod就绪后再销毁旧Pod，保障发布可用性
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1        # 更新时最多额外多拉起1个新pod
+      maxUnavailable: 0  # 不先删旧pod，新pod就绪后才删旧，更新不中断
+  revisionHistoryLimit: 5  # 保留5个历史ReplicaSet，用于回滚，减少etcd占用
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hy-demo-project # pod标签，须与selector.matchLabels一致
+    spec:
+      # Java后端优雅关闭时间，等待存量请求处理完成再杀死容器
+      terminationGracePeriodSeconds: 60
+      # --------------------------
+      # DaemonSet stdout模式: 删除全部日志相关 volumes/volumeMounts
+      # (emptyDir、fluentd configMap、hostPath 全部不需要，业务只往stdout打日志)
+      # --------------------------
+      containers:
+        - name: hy-demo-project
+          image: 168824777132.dkr.ecr.ap-southeast-1.amazonaws.com/hy-demo-project:TAG
+          imagePullPolicy: IfNotPresent  # 本地有就不拉；私有ECR推荐(或用Always保证拉最新)
+          ports:
+            - containerPort: 9010         # 容器内应用监听端口，与application.yml server.port一致
+              name: http                  # 端口命名，service/probe引用名字，避免硬编码数字
+          # ----------------------------------------------------------------------
+          # 环境变量【建议补充，按需用configMap/secret或直配】
+          # ----------------------------------------------------------------------
+          env:
+            # 【推荐】按环境加载对应application-{env}.yml，配合标签environment: ${ENV}
+            # 也可以改为从configMap注入(见下方按需开启注释)
+            - name: SPRING_PROFILES_ACTIVE
+              value: "${ENV}"
+            # 【推荐】限制JVM堆内存，防止超容器限制OOM; -Xmx预留余量(2Gi容器建议~1g)
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xmx1024m -Xms256m -XX:+UseG1GC"
+          # ----------------------------------------------------------------------
+          # 存活探针 livenessProbe：判断容器是否卡死，连续失败则重启Pod
+          # 不再使用swagger /v2/api-docs，改用actuator健康接口
+          # failureThreshold=3：连续失败3次才重启，避免GC/网络抖动误重启
+          # ----------------------------------------------------------------------
+          livenessProbe:
+            httpGet:
+              path: /actuator/health     # actuator健康端点，需引入spring-boot-starter-actuator
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 20      # Java启动慢，预留启动时间
+            periodSeconds: 10            # 每10秒探测一次
+            timeoutSeconds: 5            # 5秒没返回判定单次失败
+            failureThreshold: 3
+            successThreshold: 1
+          # ----------------------------------------------------------------------
+          # 就绪探针 readinessProbe：判断Pod是否准备接收流量
+          # 探针失败，不会加入Service后端，不会接收用户请求
+          # ----------------------------------------------------------------------
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+            successThreshold: 1
+          # ----------------------------------------------------------------------
+          # 【建议补充】启动探针 startupProbe
+          # 后端冷启动慢，用startupProbe给足启动缓冲，期间不执行存活/就绪探针，
+          # 避免启动超时被误杀(比拉长initialDelaySeconds更规范)
+          # ----------------------------------------------------------------------
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 10      # 启动10s后开始探测
+            periodSeconds: 5             # 每5s探测一次
+            timeoutSeconds: 5
+            failureThreshold: 30         # 失败30次(约150s)内只要成功即算启动完成
+            successThreshold: 1
+          # ----------------------------------------------------------------------
+          # 资源配额【生产必配】来自原业务值，后续根据监控压测调优
+          # requests:调度依据，保证节点能放下; limits:上限，超CPU被限流、超内存OOM Kill
+          # ----------------------------------------------------------------------
+          resources:
+            limits:
+              cpu: 800m                  # 最大0.8核CPU
+              memory: 2Gi                # 最大2G内存，超了OOM; 须与JVM -Xmx留余量
+            requests:
+              cpu: 600m                  # 至少0.6核
+              memory: 512Mi              # 至少512M
+          # ======================【按需开启】环境变量，配置/密码取自configMap/secret ======================
+      #        env:
+      #        - name: SPRING_PROFILES_ACTIVE
+      #          valueFrom:
+      #            configMapKeyRef:
+      #              name: backend-config
+      #              key: spring-profile
+      #        - name: DB_PASSWORD
+      #          valueFrom:
+      #            secretKeyRef:
+      #              name: backend-secret
+      #              key: db-password
+      # ----------------------------------------------------------------------
+      # 【按需开启】安全加固: 生产合规环境使用(需镜像支持非root运行)
+      # ----------------------------------------------------------------------
+      #      securityContext:
+      #        runAsNonRoot: true             # 禁止root运行容器
+      #        allowPrivilegeEscalation: false
+      # ----------------------------------------------------------------------
+      # 【按需开启】多AZ打散: 生产多AZ集群打开，测试注释
+      # 把pod尽量分布到不同可用区，避免单AZ故障所有后端pod全挂
+      # ----------------------------------------------------------------------
+#      topologySpreadConstraints:
+#        - maxSkew: 1
+#          topologyKey: topology.kubernetes.io/zone
+#          whenUnsatisfiable: ScheduleAnyway
+#          labelSelector:
+#            matchLabels:
+#              app.kubernetes.io/name: hy-demo-project
+#      nodeSelector: {}
+#      tolerations: []
+# ==============================================================================
+# 📝 备注
+# 1. 探针/actuator: 应用pom.xml必须引入 spring-boot-starter-actuator，
+#    且 application.yml 开启: management.endpoint.health.show-details=always
+# 2. 优雅停机(可选): 在application.yml配置
+#    spring.lifecycle.timeout-per-shutdown-phase=20s
+#    server.shutdown=graceful
+#    配合terminationGracePeriodSeconds:60，让k8s删除前给足时间处理存量请求
+# 3. 日志: stdout模式需确保应用logback把日志输出到控制台(不打文件)，
+#    由集群 Fluent-Bit DaemonSet 采集; 不要混用写本地文件，否则会采不到
+# 4. 【HPA】若要用HPA自动扩缩，集群需已部署 metrics-server(metrics.k8s.io API)
+# 5. 【DaemonSet模式配套】集群只需部署一次 Fluent-Bit DaemonSet，
+#    从所有节点容器stdout统一采集日志; 业务Deployment无需任何日志采集配置
+#
+# ------------------------------------------------------------------------------
+# ⚠️ 如需改回【Sidecar 模式】(旧项目兼容)，需在本文件增加以下配置:
+#   a. spec 增加 volumes:
+#      - emptyDir: {}            # 共享日志卷，主应用写、sidecar读
+#        name: app-logs
+#      - configMap:
+#          defaultMode: 420
+#          name: hy-demo-project-fluentd-config   # 配套configMap必须存在
+#        name: config-volume
+#   b. 主容器增加 volumeMounts:
+#      - name: app-logs
+#        mountPath: /data/logs   # 并把logback改回输出到/data/logs文件
+#   c. 增加 fluentd sidecar 容器(与主容器同Pod):
+#      - name: fluentd
+#        image: <td-agent镜像>:<tag>
+#        imagePullPolicy: Always
+#        env:
+#        - name: FLUENTD_ARGS
+#          value: -c /fluentd/etc/fluent.conf
+#        resources: { requests:{cpu:200m,memory:256Mi}, limits:{cpu:300m,memory:384Mi} }
+#        volumeMounts:
+#        - mountPath: /fluentd/etc
+#          name: config-volume
+#        - name: app-logs
+#          mountPath: /data/logs
+#   d. 注意: Sidecar模式每pod一个fluentd，扩缩容随之增减采集器，资源开销大，
+#      且需额外维护configMap。新项目优先 DaemonSet(Fluent-Bit)，不推荐sidecar。
+# ==============================================================================

@@ -1,0 +1,5 @@
+spring:
+  application:
+    name: spring-demo-pro
+server:
+  port: 9010

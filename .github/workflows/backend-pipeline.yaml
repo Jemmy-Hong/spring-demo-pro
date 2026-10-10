@@ -1,0 +1,109 @@
+# ==============================================================================
+# 文件: .github/workflows/backend-deploy.yml
+# 用途: Spring Boot 后端 GitHub Action 流水线：登录ECR → 构建镜像 → 推送ECR → 部署EKS
+# 流程: build镜像 → push到ECR → 用该镜像tag部署到EKS (三段式标准做法)
+# 触发: 推送到 main(生产) 或其他分支时触发，多环境靠分支判断
+# ==============================================================================
+name: Backend Build & Deploy
+
+# ---------- 触发条件 ----------
+on:
+  push:
+    branches:
+      - main          # main分支(生产)推送触发
+      - dev           # dev分支(开发)推送触发
+      - 'release/**'  # release分支(预发/qa)可选
+  workflow_dispatch:  # 支持手动在GitHub页面点"Run workflow"
+
+# ---------- 权限(OIDC方式获取AWS临时凭证，推荐，比存长期AK安全) ----------
+permissions:
+  id-token: write
+  contents: read
+
+# 全局环境变量(可被各job覆盖)
+env:
+  AWS_REGION: ap-southeast-1       # AWS区域，和EKS/ECR一致
+  ECR_REPO: hy-demo-project        # ECR仓库名(去掉域名前缀)，👈替换为你的仓库名
+  EKS_CLUSTER: your-eks-cluster    # EKS集群名，👈替换
+  APP_NS: default                  # K8s命名空间
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. 检出代码(必须，获取源码构建)
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2. 安装 envsubst(用于替换deployment.yaml占位符) —— ubuntu runner默认没装gettext
+      - name: Install envsubst
+        run: sudo apt-get update && sudo apt-get install -y gettext
+
+      # 3. 配置AWS凭证：OIDC联邦方式(推荐)
+      #    需在AWS配置IAM OIDC provider信任GitHub Actions，role需有ECR+EKS权限
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::168824777132:role/github-actions-eks   # 👈替换为你的OIDC role ARN
+          aws-region: ${{ env.AWS_REGION }}
+          # 若不用OIDC，改用以下(需在repo设置Actions secrets配置AK/SK):
+          # aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          # aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      # 4. 登录ECR(推送镜像前必须)
+      - name: Login to ECR
+        run: |
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
+          docker login --username AWS --password-stdin 168824777132.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+
+      # 5. 构建Docker镜像(在项目根目录构建，-f指定Dockerfile路径)
+      #    用git commit短hash做镜像tag，保证每次部署唯一可回溯
+      - name: Build image
+        env:
+          TAG: ${{ github.sha }}
+        run: |
+          docker build -f deploy/docker/Dockerfile \
+                       -t 168824777132.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}:${{ env.TAG }} .
+
+      # 6. 推送镜像到ECR
+      - name: Push image to ECR
+        env:
+          TAG: ${{ github.sha }}
+        run: |
+          docker push 168824777132.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}:${{ env.TAG }}
+
+      # 7. 更新kubeconfig连接EKS集群
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+
+      # 8. 部署：envsubst替换占位符后apply
+      #    多环境：分支判断给变量赋不同值
+      #    main→prod(副本3, profile=prod), dev→dev(副本2, profile=dev)
+      - name: Deploy to EKS
+        env:
+          ENV: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
+          DEPLOYMENT_REPLICAS: ${{ github.ref == 'refs/heads/main' && '3' || '2' }}
+          TAG: ${{ github.sha }}
+        run: |
+          # 部署Deployment(占位符: replicas, TAG, ENV)
+          envsubst < deploy/k8s/deployment.yaml | kubectl apply -n ${{ env.APP_NS }} -f -
+
+          # 部署Service(ClusterIP)
+          envsubst < deploy/k8s/service.yaml | kubectl apply -n ${{ env.APP_NS }} -f -
+
+          # 部署HPA(生产建议)
+          envsubst < deploy/k8s/hpa.yaml | kubectl apply -n ${{ env.APP_NS }} -f -
+
+      # 9. 验证滚动更新完成(可选但推荐)
+      - name: Verify rollout
+        run: |
+          kubectl rollout status deployment/hy-demo-project -n ${{ env.APP_NS }} --timeout=300s
+# ==============================================================================
+# 📝 备注
+# 1. 多环境: main→prod, dev→dev, 通过分支判断给 ENV/DEPLOYMENT_REPLICAS 赋不同值
+# 2. 配置文件已在jar内，SPRING_PROFILES_ACTIVE=${ENV} 自动加载对应 application-{env}.yml
+# 3. 镜像tag用 ${github.sha}(commit hash)，可回溯到具体代码版本
+# 4. OIDC role需要ECR读写 + EKS部署权限，记得在AWS配置
+# 5. 敏感配置(DB密码等)用 secrets，勿写明文到workflow
+# ==============================================================================

@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# 继承base基础模板
+resources:
+  - ../../base
+
+namespace: dev # kustomize会把所有资源自动注入这个namespace, 真实情况需要改动，首先考察是多集群/单集群多个namespace。
+
+# dev副本数
+replicas:
+  - name: hy-portal-service
+    count: 1
+
+# 给资源打上环境标签 dev
+labels:
+  - includeTemplates: true
+    pairs:
+      environment: dev
+
+images:
+  - name: frontend-img
+    newName: 650708167380.dkr.ecr.ap-southeast-1.amazonaws.com/hy-frontend-repo
+    newTag: ${IMAGE_TAG}
