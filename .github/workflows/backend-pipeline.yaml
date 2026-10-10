@@ -31,7 +31,8 @@ permissions:
 env:
   AWS_REGION: ap-southeast-1       # AWS区域，和EKS集群、ECR镜像仓库保持一致
   ECR_REPO: hy-demo-project        # ECR仓库名(去掉域名前缀)，👈替换为你的仓库名
-  EKS_CLUSTER_DEV_QA: eks-demo     # dev、qa环境共用的EKS集群名称，👈替换
+  EKS_CLUSTER_DEV: eks-demo     # dev、qa环境共用的EKS集群名称，👈替换
+  EKS_CLUSTER_QA: eks-demo     # dev、qa环境共用的EKS集群名称，👈替换
   EKS_CLUSTER_PROD: eks-prod       # prod生产环境独立EKS集群名称，👈替换
   ECR_REGISTRY: 168824777132.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com   # ECR镜像仓库完整域名地址
 
@@ -86,7 +87,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ENV_NAME: dev
-      EKS_CLUSTER: ${{ env.EKS_CLUSTER_DEV_QA }} # dev环境使用dev/qa共享集群
+      EKS_CLUSTER: ${{ env.EKS_CLUSTER_DEV }} # dev环境使用dev/qa共享集群
       NAMESPACE: dev                            # dev环境使用独立namespace
       IMAGE_TAG: ${{ needs.build-image.outputs.IMAGE_TAG }} # 复用上游job输出的镜像tag
     steps:
@@ -144,7 +145,7 @@ jobs:
       # 更新kubeconfig，切换kubectl上下文到dev/qa集群
       - name: Update kubeconfig for dev/qa cluster
         run: |
-          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_QA }} --region ${{ env.AWS_REGION }}
 
       # Kustomize渲染qa overlay，替换镜像地址，部署到qa命名空间
       - name: Deploy with Kustomize
@@ -183,7 +184,7 @@ jobs:
       # 更新kubeconfig，切换kubectl上下文到prod独立集群
       - name: Update kubeconfig for prod cluster
         run: |
-          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_PROD }} --region ${{ env.AWS_REGION }}
 
       # Kustomize渲染prod overlay，替换镜像地址，部署到prod集群prod命名空间
       - name: Deploy with Kustomize
