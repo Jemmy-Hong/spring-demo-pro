@@ -1,0 +1,32 @@
+# ==============================================================================
+# 文件: overlays/qa/patch.yaml
+# 用途：qa环境补丁，同时修改Deployment容器配置 + HPA扩缩容参数
+# ==============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hy-demo-project
+spec:
+  template:
+    spec:
+      containers:
+        - name: backend
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: "qa"
+          resources:
+            # QA环境资源规格高于dev，接近生产
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "1000m"
+              memory: "2Gi"
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: hy-demo-project-hpa
+spec:
+  minReplicas: 2 # qa最小副本数，预启动2个Pod模拟多实例
+  maxReplicas: 5 # qa最大副本上限

@@ -1,0 +1,35 @@
+# ==============================================================================
+# 文件: overlays/dev/ingress.yaml
+# 用途：后端dev环境内网ALB Ingress，仅VPN/公司内网访问，外部互联网无法访问
+# ==============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hy-backend-ingress
+  annotations:
+    # ALB控制器版本
+    kubernetes.io/ingress.class: "my-aws-ingress-class"
+    # 内网ALB，不分配公网IP，只能VPC内/VPN访问
+    alb.ingress.kubernetes.io/scheme: internal
+    # ACM证书ARN，替换成你ap-southeast-1的证书arn
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-southeast-1:650708167380:certificate/f3ede...
+    # 只监听443 HTTPS端口
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    # HTTP自动跳转HTTPS
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    # 健康检查配置
+    alb.ingress.kubernetes.io/healthcheck-path: /actuator/health
+    alb.ingress.kubernetes.io/healthcheck-port: "9010"
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: 15
+spec:
+  rules:
+    - host: api-dev.kellyclould.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: hy-demo-project
+                port:
+                  number: 9010

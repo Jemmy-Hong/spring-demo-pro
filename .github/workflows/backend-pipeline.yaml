@@ -99,11 +99,11 @@ jobs:
     env:
       ENV_NAME: dev
     steps:
-      # 检出代码，读取kustomize配置文件（deploy/k8s/overlays）
+      # 检出代码，读取kustomize多环境配置文件（deploy/k8s/overlays目录）
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 配置AWS AK/SK凭证，和build阶段保持一致
+      # 配置AWS AK/SK凭证，和build阶段保持一致，用于后续eks、ecr相关操作
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -111,23 +111,30 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # 更新kubeconfig，把当前runner的kubectl上下文切换到dev集群
+      # 更新kubeconfig，把当前github runner的kubectl上下文切换到dev/qa集群
       - name: Update kubeconfig for dev/qa cluster
         run: |
           aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_DEV }} --region ${{ env.AWS_REGION }}
 
-      # Kustomize渲染overlay配置，动态替换镜像名称，直接apply到k8s
-      # --image backend-app=xxx：替换kustomize内backend-app占位镜像为ECR完整镜像地址
+      # 安装独立版本kustomize二进制工具，kubectl内置kustomize不支持--image参数，必须单独安装
+      - name: Install kustomize
+        uses: kubernetes-sigs/kustomize-action@v1
+        with:
+          kustomize-version: v5.4.0
+
+      # Kustomize渲染overlay多环境配置，动态替换镜像名称
+      # --image backend-image=xxx : 将kustomize模板内backend-image占位镜像替换为ECR完整镜像地址
+      # 仅内存渲染，不会修改仓库内yaml源码，避免git出现文件变更
       - name: Deploy with Kustomize
         env:
           ECR_REGISTRY: ${{ needs.build.outputs.ECR_REGISTRY }}
           IMAGE_TAG: ${{ needs.build.outputs.IMAGE_TAG }}
         run: |
-          kubectl kustomize deploy/k8s/overlays/${{ env.ENV_NAME }} \
-          --image backend-app=${ECR_REGISTRY}/${{ env.ECR_REPO }}:${IMAGE_TAG} \
+          kustomize build deploy/k8s/overlays/${{ env.ENV_NAME }} \
+          --image backend-image=${ECR_REGISTRY}/${{ env.ECR_REPO }}:${IMAGE_TAG} \
           | kubectl apply -f -
 
-      # 校验Deployment滚动更新是否成功，等待pod就绪，超时5分钟
+      # 校验Deployment滚动更新是否成功，等待所有pod就绪，超时时间5分钟
       - name: Verify rollout status
         run: |
           kubectl rollout status deployment/hy-demo-project -n ${{ env.NAMESPACE_DEV }} --timeout=300s
@@ -166,7 +173,7 @@ jobs:
           IMAGE_TAG: ${{ needs.build.outputs.IMAGE_TAG }}
         run: |
           kubectl kustomize deploy/k8s/overlays/${{ env.ENV_NAME }} \
-          --image backend-app=${ECR_REGISTRY}/${{ env.ECR_REPO }}:${IMAGE_TAG} \
+          --image backend-image=${ECR_REGISTRY}/${{ env.ECR_REPO }}:${IMAGE_TAG} \
           | kubectl apply -f -
 
       # 等待Deployment滚动更新完成，校验pod就绪状态

@@ -1,22 +1,30 @@
+# ==============================================================================
+# 文件: overlays/qa/kustomization.yaml
+# 用途：qa环境kustomize配置
+# 继承base资源，引入qa独有的Ingress，设置namespace、副本数、全局标签、部署补丁
+# ==============================================================================
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# 继承base目录所有yaml资源(deployment + service)
 resources:
   - ../../base
+  - ingress.yaml
 
-namespace: qa # kustomize会把所有资源自动注入这个namespace, 真实情况需要改动，首先考察是多集群/单集群多个namespace。
+# 全局：所有资源自动加上namespace=qa
+namespace: qa
 
+# 覆盖Deployment副本数量
 replicas:
-  - name: hy-portal-site
-    count: 1
+  - name: hy-demo-project
+    count: 2
 
-# 给资源打上环境标签 qa
+# 全局给所有资源追加环境标签 environment: qa
 labels:
   - includeTemplates: true
     pairs:
       environment: qa
 
-images:
-  - name: frontend-img
-    newName: temp-ci-will-override
-    newTag: placeholder
+# 引入补丁文件，修改Deployment容器内部配置
+patches:
+  - path: patch.yaml

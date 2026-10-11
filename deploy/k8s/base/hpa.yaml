@@ -1,16 +1,17 @@
 # ==============================================================================
-# hpa-backend.yaml
+# hpa.yaml
 # HPA Pod水平自动扩缩容（HorizontalPodAutoscaler）
 # 作用：根据Pod CPU、内存使用率，自动增加/减少Deployment的Pod副本数量
 # 前置依赖条件：集群必须安装 metrics-server，否则无法获取Pod指标，HPA完全失效
 # CI变量：DEPLOYMENT_REPLICAS 由CI/CD流水线替换，作为最小运行副本数
+# 存放位置：deploy/k8s/base/hpa.yaml
+# 说明：base为公共基础模板，namespace交由overlay各环境单独管理，不在base写死namespace
 # ==============================================================================
 apiVersion: autoscaling/v2 # HPA稳定正式API版本；废弃v2beta1，不要使用beta版本
 kind: HorizontalPodAutoscaler
-
 metadata:
   name: hy-demo-project-hpa # HPA资源自身名称，kubectl get hpa看到的名字
-  namespace: default # 命名空间，要和目标Deployment处于同一个namespace；生产建议使用独立业务namespace
+  # namespace: default # 【已移除】命名空间交给overlay全局设置，避免多环境之间namespace冲突
   labels:
     #【推荐，非强制】k8s标准标签，和目标deployment保持一致，用于监控、账单、资源分组筛选
     app.kubernetes.io/name: hy-demo-project
@@ -20,17 +21,16 @@ metadata:
     app.kubernetes.io/component: backend
     #【推荐，非强制】归属的大业务系统，用于按业务聚合统计
     app.kubernetes.io/part-of: hy-business
-    #【推荐，非强制】环境标识，CI注入 dev/test/prod
-    environment: ${ENV}
-
+    #【推荐，非强制】环境标识，由overlay全局labels统一注入，不在base写变量
+    # environment: ${ENV}
 spec:
   # scaleTargetRef：HPA绑定的目标资源，告诉HPA要对哪个Deployment做自动扩缩容
   scaleTargetRef:
     apiVersion: apps/v1 # 目标Deployment的apiVersion，固定为apps/v1，不要写废弃extensions/v1beta1
     kind: Deployment # 目标资源类型，HPA一般对接Deployment，也支持ReplicaSet/StatefulSet
     name: hy-demo-project # 目标Deployment的名称，名字写错HPA无法管控副本
-  minReplicas: DEPLOYMENT_REPLICAS # 最小Pod副本数：无论负载多低，Pod数量不会低于这个值；CI注入变量
-  maxReplicas: 10 # 最大Pod副本数：无论负载多高，最多扩容到10个Pod，防止流量异常打爆整个集群资源
+  minReplicas: 1 # 最小Pod副本数：无论负载多低，Pod数量不会低于这个值；CI注入变量
+  maxReplicas: 3 # 最大Pod副本数：无论负载多高，最多扩容到10个Pod，防止流量异常打爆整个集群资源
 
   # metrics：定义触发扩缩容的监控指标，可以配置CPU、内存、自定义prometheus指标等
   metrics:
@@ -53,7 +53,6 @@ spec:
       stabilizationWindowSeconds: 300 # 缩容冷却窗口5分钟；取过去5分钟内建议的最大副本数，不会一降负载立刻删Pod，防止瞬时流量回落误缩容
     scaleUp: # 扩容行为配置：负载升高，要增加Pod的时候
       stabilizationWindowSeconds: 60 # 扩容冷却窗口1分钟；压力上涨允许较快扩容，保证业务快速扛住流量
-
 # ==============================================================================
 # 📝备忘录
 # 1、集群缺少metrics-server组件，HPA拿不到CPU内存指标，HPA完全无法工作，这是新人最高发踩坑点
@@ -61,6 +60,7 @@ spec:
 # 3、HPA和日志采集模式完全无关，不管是DaemonSet模式还是Sidecar模式，HPA都可以正常生效
 # 4、averageUtilization 是相对于 resources.requests 的百分比，不是limits！！requests设置过小会导致HPA频繁错误扩容
 # 5、behavior.stabilizationWindowSeconds 冷却时间：缩容要给长一点时间，避免震荡；扩容可以短一点，保证快速应对流量高峰
-# 6、校验命令：kubectl apply -f hpa-backend.yaml --dry-run=client
+# 6、校验命令：kubectl apply -f hpa.yaml --dry-run=client
 # 7、查看HPA运行状态命令：kubectl get hpa -n <namespace>，观察TARGETS列可以看到指标采集是否正常
+# 8、本文件放在base，dev/qa/prod三个环境共用；各环境namespace由overlays下kustomization.yaml全局指定
 # ==============================================================================

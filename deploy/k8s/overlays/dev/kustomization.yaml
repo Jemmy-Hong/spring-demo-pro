@@ -1,24 +1,30 @@
+# ==============================================================================
+# 文件: overlays/dev/kustomization.yaml
+# 用途：dev环境kustomize配置
+# 继承base资源，引入dev独有的Ingress，设置namespace、副本数、全局标签、部署补丁
+# ==============================================================================
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-# 继承base基础模板
+# 继承base目录所有yaml资源(deployment + service)
 resources:
   - ../../base
+  - ingress.yaml
 
-namespace: dev # kustomize会把所有资源自动注入这个namespace, 真实情况需要改动，首先考察是多集群/单集群多个namespace。
+# 全局：所有资源自动加上namespace=dev
+namespace: dev
 
-# dev副本数
+# 覆盖Deployment副本数量
 replicas:
-  - name: hy-portal-service
+  - name: hy-demo-project
     count: 1
 
-# 给资源打上环境标签 dev
+# 全局给所有资源追加环境标签 environment: dev
 labels:
   - includeTemplates: true
     pairs:
       environment: dev
 
-images:
-  - name: frontend-img
-    newName: 650708167380.dkr.ecr.ap-southeast-1.amazonaws.com/hy-frontend-repo
-    newTag: ${IMAGE_TAG}
+# 引入补丁文件，修改Deployment容器内部配置（环境变量、JVM、资源限制）
+patches:
+  - path: patch.yaml

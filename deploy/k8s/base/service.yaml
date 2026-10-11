@@ -3,20 +3,20 @@
 # 后端 Service（ClusterIP）：仅集群内部访问，供前端Nginx通过 /api 反向代理调用
 # 不对外暴露：外部流量由前端 Ingress+ALB 进入，后端不需要 NodePort/LoadBalancer
 # CI变量：${ENV}(环境标识)
+# 存放位置：deploy/k8s/base/service.yaml
+# 说明：base为公共基础模板，namespace交由overlay各环境单独管理，不在base写死namespace
 # ==============================================================================
 apiVersion: v1            # Service使用的API版本，v1是最稳定版本
 kind: Service             # 资源类型：Service，集群内部的服务发现与负载均衡入口
-
 metadata:
   name: hy-demo-project-svc   # Service资源名称，Ingress/其他服务通过这个名字访问
-  namespace: default          # 命名空间，须与Deployment保持同一个namespace
+  # namespace: default          # 【已移除】命名空间交给overlay全局设置，避免多环境冲突
   labels:                     # k8s标准标签，监控/账单/资源分组按标签筛选
     app.kubernetes.io/name: hy-demo-project   # 应用名称，与Deployment一致
     app.kubernetes.io/instance: hy-demo-project # 实例标识
     app.kubernetes.io/component: backend       # 组件类型：后端
     app.kubernetes.io/part-of: hy-business     # 归属业务系统
-    environment: ${ENV}                        # 环境标识，CI注入 dev/test/prod
-
+    # environment: ${ENV}                        # 【注释】环境标签由overlay全局labels统一注入，不在base写变量
 spec:
   # ---------------- 端口定义 ----------------
   # port:Service对外(集群内)暴露的端口，其他服务访问 service名:port
@@ -26,13 +26,11 @@ spec:
     - port: 9010             # 集群内访问该Service的端口(如 hy-demo-project-svc:9010)
       targetPort: 9010       # 转发到Pod容器端口，须=Deployment containerPort(9010)
       name: http             # 端口名称，供Ingress/探针引用
-
   # ---------------- 选择器(关键!) ----------------
   # selector用于匹配后端Pod；必须和Deployment的pod模板labels.app.kubernetes.io/name一致
   # 否则Service找不到任何Pod，访问会502
   selector:
     app.kubernetes.io/name: hy-demo-project   # 只保留应用名标签即可匹配
-
   type: ClusterIP          # 仅集群内部可访问；后端不外网，由前端Nginx反代，用ClusterIP
 # ==============================================================================
 # 📝备注
@@ -40,5 +38,6 @@ spec:
 # 2、selector必须与Deployment的pod标签匹配，否则502，这是最常踩的坑
 # 3、targetPort(9010)必须与Deployment的containerPort一致，否则连不上Pod
 # 4、禁止给后端用NodePort/LoadBalancer，除非特殊需求(如调试临时暴露)
-# 5、验证：kubectl get svc -n default，看SELECTOR列是否匹配；kubectl describe svc 查Endpoints
+# 5、验证：kubectl get svc -n <namespace>，看SELECTOR列是否匹配；kubectl describe svc 查Endpoints
+# 6、本文件放在base，dev/qa/prod三个环境共用；各环境namespace由overlays下kustomization.yaml全局指定
 # ==============================================================================

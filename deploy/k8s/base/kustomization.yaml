@@ -1,8 +1,13 @@
+# ==============================================================================
+# 文件：base/kustomization.yaml
+# 用途：基础公共资源定义，所有环境(dev/qa/prod)统一继承此文件
+# 包含：Deployment、ClusterIP Service、HPA自动扩缩容
+# 注意：不在base写namespace，namespace交给overlays各环境单独设置，避免冲突
+# ==============================================================================
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-namespace: default
-
+# 基础资源清单，所有环境共用的基础yaml
 resources:
   - deployment.yaml
   - service.yaml

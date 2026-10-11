@@ -1,0 +1,32 @@
+# ==============================================================================
+# 文件: overlays/prod/patch.yaml
+# 用途：prod环境补丁，同时修改Deployment容器配置 + HPA扩缩容参数
+# ==============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hy-demo-project
+spec:
+  template:
+    spec:
+      containers:
+        - name: backend
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: "prod"
+          resources:
+            # 生产环境资源规格最高
+            requests:
+              cpu: "1000m"
+              memory: "2Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: hy-demo-project-hpa
+spec:
+  minReplicas: 3 # prod最小副本，生产保证高可用，至少3个Pod
+  maxReplicas: 10 # prod最大副本上限，防止资源雪崩

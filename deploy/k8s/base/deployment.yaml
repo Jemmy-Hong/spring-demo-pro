@@ -1,26 +1,25 @@
 # ==============================================================================
 # 文件: deployment-backend-user-service.yaml
-# 模式: DaemonSet Fluent-Bit 全局采集(云原生标准做法)
-#      业务SpringBoot日志输出 stdout 控制台，不写本地磁盘 /data/logs
+# 资源类型: Deployment 后端SpringBoot应用
+# 日志方案: DaemonSet Fluent-Bit 全局采集(云原生标准做法)
+#      业务SpringBoot日志输出 stdout 控制台，不写本地磁盘文件
 #      由集群中【每节点一个的 Fluent-Bit DaemonSet】从容器stdout统一采集上送
 # 前提: 集群已部署 DaemonSet Fluent-Bit; 如需HPA需部署 metrics-server
 # 优势: 业务容器不挂卷、不写盘，扩缩容零额外采集器，多副本日志天然聚合
-# CI变量: DEPLOYMENT_REPLICAS、TAG、${ENV}
+# 说明：base基础模板，变量、环境标签、副本数、namespace 在各环境overlay/patch.yaml覆盖
 # ==============================================================================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: hy-demo-project
-  namespace: default  # 生产建议改为独立业务命名空间(如 backend-xxx)
   labels:
     # k8s标准标签，监控、日志、告警、链路追踪统一识别，生产强烈建议
     app.kubernetes.io/name: hy-demo-project   # 应用名称
     app.kubernetes.io/instance: hy-demo-project # 实例名称，一套部署一个instance
     app.kubernetes.io/component: backend        # 组件类型：backend(后端)
     app.kubernetes.io/part-of: hy-business           # 归属业务系统，按业务聚合筛选
-    environment: ${ENV}           # 环境标识 dev/test/prod，CI注入
 spec:
-  replicas: DEPLOYMENT_REPLICAS   # 副本数，由CI替换，不要硬编码
+  replicas: 1   # base基础模板默认1副本；dev/qa/prod副本数，在overlay的patch.yaml覆盖
   # apps/v1强制必填，selector标签和pod模板labels严格匹配
   selector:
     matchLabels:
@@ -45,19 +44,18 @@ spec:
       # --------------------------
       containers:
         - name: hy-demo-project
-          image: 168824777132.dkr.ecr.ap-southeast-1.amazonaws.com/hy-demo-project:TAG
+          image: backend-image # 占位镜像，流水线kustomize --image参数动态替换
           imagePullPolicy: IfNotPresent  # 本地有就不拉；私有ECR推荐(或用Always保证拉最新)
           ports:
             - containerPort: 9010         # 容器内应用监听端口，与application.yml server.port一致
               name: http                  # 端口命名，service/probe引用名字，避免硬编码数字
           # ----------------------------------------------------------------------
-          # 环境变量【建议补充，按需用configMap/secret或直配】
+          # 环境变量【dev/qa/prod环境变量，可在overlay patch或configMap/Secret注入】
           # ----------------------------------------------------------------------
           env:
-            # 【推荐】按环境加载对应application-{env}.yml，配合标签environment: ${ENV}
-            # 也可以改为从configMap注入(见下方按需开启注释)
+            # 【推荐】按环境加载对应application-{env}.yml，环境变量在overlay注入
             - name: SPRING_PROFILES_ACTIVE
-              value: "${ENV}"
+              value: "dev"
             # 【推荐】限制JVM堆内存，防止超容器限制OOM; -Xmx预留余量(2Gi容器建议~1g)
             - name: JAVA_TOOL_OPTIONS
               value: "-Xmx1024m -Xms256m -XX:+UseG1GC"
@@ -116,28 +114,33 @@ spec:
             requests:
               cpu: 600m                  # 至少0.6核
               memory: 512Mi              # 至少512M
-          # ======================【按需开启】环境变量，配置/密码取自configMap/secret ======================
-      #        env:
-      #        - name: SPRING_PROFILES_ACTIVE
-      #          valueFrom:
-      #            configMapKeyRef:
-      #              name: backend-config
-      #              key: spring-profile
-      #        - name: DB_PASSWORD
-      #          valueFrom:
-      #            secretKeyRef:
-      #              name: backend-secret
-      #              key: db-password
-      # ----------------------------------------------------------------------
-      # 【按需开启】安全加固: 生产合规环境使用(需镜像支持非root运行)
-      # ----------------------------------------------------------------------
-      #      securityContext:
-      #        runAsNonRoot: true             # 禁止root运行容器
-      #        allowPrivilegeEscalation: false
-      # ----------------------------------------------------------------------
-      # 【按需开启】多AZ打散: 生产多AZ集群打开，测试注释
-      # 把pod尽量分布到不同可用区，避免单AZ故障所有后端pod全挂
-      # ----------------------------------------------------------------------
+---
+# ======================== 可选配置（放到overlay的patch.yaml中，不要放base）========================
+# ======================【按需开启】环境变量，配置/密码取自configMap/secret ======================
+#        env:
+#        - name: SPRING_PROFILES_ACTIVE
+#          valueFrom:
+#            configMapKeyRef:
+#              name: backend-config
+#              key: spring-profile
+#        - name: DB_PASSWORD
+#          valueFrom:
+#            secretKeyRef:
+#              name: backend-secret
+#              key: db-password
+# ----------------------------------------------------------------------
+
+
+# 【按需开启】安全加固: 生产合规环境使用(需镜像支持非root运行)
+# ----------------------------------------------------------------------
+#  securityContext:
+#    runAsNonRoot: true          # 禁止root运行容器
+#    allowPrivilegeEscalation: false
+
+# ----------------------------------------------------------------------
+# 【按需开启】多AZ打散: 生产多AZ集群打开，测试注释
+# 把pod尽量分布到不同可用区，避免单AZ故障所有后端pod全挂
+# ----------------------------------------------------------------------
 #      topologySpreadConstraints:
 #        - maxSkew: 1
 #          topologyKey: topology.kubernetes.io/zone
@@ -147,6 +150,7 @@ spec:
 #              app.kubernetes.io/name: hy-demo-project
 #      nodeSelector: {}
 #      tolerations: []
+
 # ==============================================================================
 # 📝 备注
 # 1. 探针/actuator: 应用pom.xml必须引入 spring-boot-starter-actuator，
@@ -162,7 +166,7 @@ spec:
 #    从所有节点容器stdout统一采集日志; 业务Deployment无需任何日志采集配置
 #
 # ------------------------------------------------------------------------------
-# ⚠️ 如需改回【Sidecar 模式】(旧项目兼容)，需在本文件增加以下配置:
+# ⚠️ 如需改回【Sidecar 模式】(旧项目兼容)，需单独新建yaml，不要写在base模板、
 #   a. spec 增加 volumes:
 #      - emptyDir: {}            # 共享日志卷，主应用写、sidecar读
 #        name: app-logs
