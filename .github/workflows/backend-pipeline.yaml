@@ -120,6 +120,7 @@ jobs:
       - name: Deploy with Kustomize
         env:
           ECR_REGISTRY: ${{ needs.build.outputs.ECR_REGISTRY }}
+          ECR_REPO: ${{ env.ECR_REPO }}
           IMAGE_TAG: ${{ needs.build.outputs.IMAGE_TAG }}
         run: |
           cd deploy/k8s/overlays/${{ env.ENV_NAME }}
@@ -171,6 +172,7 @@ jobs:
       - name: Deploy with Kustomize
         env:
           ECR_REGISTRY: ${{ needs.build.outputs.ECR_REGISTRY }}
+          ECR_REPO: ${{ env.ECR_REPO }}
           IMAGE_TAG: ${{ needs.build.outputs.IMAGE_TAG }}
         run: |
           cd deploy/k8s/overlays/${{ env.ENV_NAME }}
@@ -222,6 +224,7 @@ jobs:
       - name: Deploy with Kustomize
         env:
           ECR_REGISTRY: ${{ needs.build.outputs.ECR_REGISTRY }}
+          ECR_REPO: ${{ env.ECR_REPO }}
           IMAGE_TAG: ${{ needs.build.outputs.IMAGE_TAG }}
         run: |
           kubectl kustomize deploy/k8s/overlays/${{ env.ENV_NAME }} \
