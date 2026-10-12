@@ -28,3 +28,6 @@ labels:
 # 引入补丁文件，修改Deployment容器内部配置（环境变量、JVM、资源限制）
 patches:
   - path: patch.yaml
+
+images:
+  - name: backend-image
