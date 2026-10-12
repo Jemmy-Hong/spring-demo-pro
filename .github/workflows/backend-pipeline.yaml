@@ -117,10 +117,15 @@ jobs:
           aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_DEV }} --region ${{ env.AWS_REGION }}
 
       # 安装独立版本kustomize二进制工具，kubectl内置kustomize不支持--image参数，必须单独安装
-      - name: Install kustomize
-        uses: kubernetes-sigs/kustomize-action@v1
-        with:
-          kustomize-version: v5.4.0
+      - name: Install fixed version kustomize v5.4.0
+        run: |
+          curl -sfL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.0/kustomize_v5.4.0_linux_amd64.tar.gz -o kustomize.tar.gz
+          echo "28daf8a85b15a8b2a72c3b40565694a8d91b2d9d7f30f9094e0b02f34c074d52  kustomize.tar.gz" | sha256sum -c
+          tar -zxvf kustomize.tar.gz
+          chmod +x kustomize
+          mv kustomize $HOME/.local/bin/
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          kustomize version
 
       # Kustomize渲染overlay多环境配置，动态替换镜像名称
       # --image backend-image=xxx : 将kustomize模板内backend-image占位镜像替换为ECR完整镜像地址
