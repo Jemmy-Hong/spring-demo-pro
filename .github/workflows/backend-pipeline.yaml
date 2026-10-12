@@ -124,7 +124,7 @@ jobs:
           ECR_REGISTRY: ${{ needs.build.outputs.ECR_REGISTRY }}
           IMAGE_TAG: ${{ needs.build.outputs.IMAGE_TAG }}
         run: |
-          kustomize build deploy/k8s/overlays/${{ env.ENV_NAME }} \
+          kubectl kustomize build deploy/k8s/overlays/${{ env.ENV_NAME }} \
           --image backend-image=${ECR_REGISTRY}/${{ env.ECR_REPO }}:${IMAGE_TAG} \
           | kubectl apply -f -
 
