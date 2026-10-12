@@ -117,8 +117,6 @@ jobs:
           aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_DEV }} --region ${{ env.AWS_REGION }}
 
       # Kustomize渲染overlay多环境配置，动态替换镜像名称
-      # --image backend-image=xxx : 将kustomize模板内backend-image占位镜像替换为ECR完整镜像地址
-      # 仅内存渲染，不会修改仓库内yaml源码，避免git出现文件变更
       - name: Deploy with Kustomize
         env:
           ECR_REGISTRY: ${{ needs.build.outputs.ECR_REGISTRY }}
@@ -143,7 +141,7 @@ jobs:
           kubectl rollout status deployment/hy-demo-project -n ${{ env.NAMESPACE_DEV }} --timeout=300s
 
   # Job3：部署 qa 环境，必须人工审批，依赖dev部署成功后，才会进入等待审批状态
-  deploy-qa:
+  qa:
     needs: dev
     # 条件：仅dev分支执行；workflow_dispatch手动触发时也允许执行
     if: github.ref == 'refs/heads/dev' || github.event_name == 'workflow_dispatch'
@@ -194,8 +192,8 @@ jobs:
           kubectl rollout status deployment/hy-demo-project -n ${{ env.NAMESPACE_QA }} --timeout=300s
 
   # Job4：部署 prod 环境，人工审批，依赖qa部署成功后，进入等待审批状态
-  deploy-prod:
-    needs: deploy-qa
+  prod:
+    needs: qa
     # 条件：仅main分支执行；workflow_dispatch手动触发时也允许执行
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
