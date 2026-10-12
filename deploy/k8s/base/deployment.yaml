@@ -38,6 +38,23 @@ spec:
     spec:
       # Java后端优雅关闭时间，等待存量请求处理完成再杀死容器
       terminationGracePeriodSeconds: 60
+      ###########################################################################
+      # 【关键调度约束：内网ALB + target-type:ip 强制开启】
+      # 内网ALB通过子网标签自动选中 ap-southeast-1b、ap-southeast-1c
+      # IP模式目标组校验：Pod所在节点的AZ必须属于ALB启用的AZ列表，否则Target.NotInUse -> 503
+      # 仅允许Pod调度到 ap-southeast-1b / ap-southeast-1c 的worker节点
+      # 如果后续更换为公网ALB且ALB包含1a/1b/1c全部AZ，可以注释掉本段全部affinity代码
+      ###########################################################################
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+                - matchExpressions:
+                  - key: topology.kubernetes.io/zone
+                    operator: In
+                    values:
+                      - ap-southeast-1b
+                      - ap-southeast-1c
       # --------------------------
       # DaemonSet stdout模式: 删除全部日志相关 volumes/volumeMounts
       # (emptyDir、fluentd configMap、hostPath 全部不需要，业务只往stdout打日志)
