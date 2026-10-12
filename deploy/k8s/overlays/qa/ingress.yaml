@@ -1,35 +1,47 @@
 # ==============================================================================
 # 文件: overlays/qa/ingress.yaml
-# 用途：后端qa环境内网ALB Ingress，仅VPN/公司内网访问
+# 用途：后端qa环境【内网ALB Ingress】
+# 特点：仅VPN/接入VPC内网可以访问，公网互联网无法访问，保障qa环境安全
 # ==============================================================================
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+apiVersion: networking.k8s.io/v1   # K8s标准Ingress API版本，1.19+固定用这个
+kind: Ingress                      # 资源类型：Ingress，用来管理ALB流量路由
 metadata:
-  name: hy-backend-ingress
+  name: hy-backend-ingress         # Ingress资源名称，同一个namespace内唯一
   annotations:
-    # ALB控制器版本
-    kubernetes.io/ingress.class: "my-aws-ingress-class"
-    # 内网ALB，不分配公网IP，只能VPC内/VPN访问
+    # ========== AWS ALB Ingress Controller 注解区域（控制ALB负载均衡器行为） ==========
+    # 指定ALB类型：internal = 内网ALB，不会分配公网IP，仅VPC内/VPN访问 (这种情况下需要给子网打上标签kubernetes.io/role/internal‑elb = 1)
     alb.ingress.kubernetes.io/scheme: internal
-    # ACM证书ARN，替换成你ap-southeast-1的证书arn
-    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-southeast-1:650708167380:certificate/f3ede...
-    # 只监听443 HTTPS端口
+    # target-type=ip：直接把流量转发到Pod IP（推荐EKS，不需要NodePort）
+    alb.ingress.kubernetes.io/target-type: ip
+    # ACM证书ARN，AP-SOUTHEAST-1区域HTTPS证书，ALB用这个证书做SSL解密
+    alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:ap-southeast-1:650708167380:certificate/f3ede8cb-fc3f-46f9-984e-9cac7e5a705b"
+    # ALB监听端口配置，这里只开启443 HTTPS（内网环境不需要80端口）
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
-    # HTTP自动跳转HTTPS
+    # SSL重定向：如果有HTTP请求，强制跳转到443 HTTPS；当前只开443，该配置保留兼容
     alb.ingress.kubernetes.io/ssl-redirect: '443'
-    # 健康检查配置
-    alb.ingress.kubernetes.io/healthcheck-path: /actuator/health
-    alb.ingress.kubernetes.io/healthcheck-port: "9010"
-    alb.ingress.kubernetes.io/healthcheck-interval-seconds: 15
+
+    # --- 健康检查配置（ALB用来判断后端Pod是否存活，我们用SpringBoot Actuator健康接口）
+    alb.ingress.kubernetes.io/healthcheck-path: /actuator/health   # 健康检查访问路径
+    alb.ingress.kubernetes.io/healthcheck-port: "9010"             # Pod服务端口，actuator在9010
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: 15     # 每15秒探测一次健康状态
+
+    # ========== ExternalDNS 注解区域（只负责自动在Route53创建DNS解析记录） ==========
+    # ExternalDNS读取这一行：自动在Route53托管域创建解析，把api-qa.kellyclould.com指向内网ALB
+    # ⚠️ 注意：这个注解【只管DNS域名解析，不管流量转发路由】，集群必须装ExternalDNS才生效
+    external-dns.alpha.kubernetes.io/hostname: api-qa.kellyclould.com
+
 spec:
+  ingressClassName: my-aws-ingress-class   # 指定IngressClass，选用alb这个控制器（kubectl get ingressclass查到的）
+  # ========== K8s原生Ingress路由规则（ALB流量匹配逻辑，【必须配置】） ==========
   rules:
-    - host: api-qa.kellyclould.com
+    - host: api-qa.kellyclould.com   # ✅【ALB路由主机头匹配规则】
+      # 请求访问时，http请求Host头等于这个域名，才会匹配下面的转发规则，否则返回404
       http:
         paths:
-          - path: /
-            pathType: Prefix
+          - path: /                   # 匹配所有根路径 / 下的全部请求
+            pathType: Prefix          # Prefix：前缀匹配，/xxx、/actuator全部命中这条规则
             backend:
               service:
-                name: hy-demo-project
+                name: hy-demo-project-svc  # 后端K8s Service名称，流量转发到这个service
                 port:
-                  number: 9010
+                  number: 9010              # Service暴露端口，和SpringBoot服务端口一致

@@ -132,8 +132,8 @@ jobs:
           # 正确命令：kustomize edit set image <imageName>=完整镜像地址
           kustomize edit set image backend-image="$FULL_IMAGE"
           # 打印渲染后的yaml，方便日志排错
-          echo "==== Rendered k8s yaml ===="
-          kustomize build .
+          # echo "==== Rendered k8s yaml ===="
+          # kustomize build .
           # 应用资源
           kustomize build . | kubectl apply -f -
 
@@ -178,9 +178,15 @@ jobs:
           cd deploy/k8s/overlays/${{ env.ENV_NAME }}
           FULL_IMAGE="${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
           echo "✅ Full image address: $FULL_IMAGE"
-          echo "==== Rendered k8s yaml ===="
-          kustomize build . --image backend-image="$FULL_IMAGE"
-          kustomize build . --image backend-image="$FULL_IMAGE" | kubectl apply -f -
+          # trap：无论脚本正常结束 / 异常退出，都执行git checkout恢复原始yaml
+          trap 'git checkout kustomization.yaml' EXIT
+          # 正确命令：kustomize edit set image <imageName>=完整镜像地址
+          kustomize edit set image backend-image="$FULL_IMAGE"
+          # 打印渲染后的yaml，方便日志排错
+          # echo "==== Rendered k8s yaml ===="
+          # kustomize build .
+          # 应用资源
+          kustomize build . | kubectl apply -f -
 
       # 等待Deployment滚动更新完成，校验pod就绪状态
       - name: Verify rollout status

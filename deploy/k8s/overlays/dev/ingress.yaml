@@ -31,7 +31,7 @@ metadata:
     external-dns.alpha.kubernetes.io/hostname: api-dev.kellyclould.com
 
 spec:
-  ingressClassName: alb   # 指定IngressClass，选用alb这个控制器（kubectl get ingressclass查到的）
+  ingressClassName: my-aws-ingress-class   # 指定IngressClass，选用alb这个控制器（kubectl get ingressclass查到的）
   # ========== K8s原生Ingress路由规则（ALB流量匹配逻辑，【必须配置】） ==========
   rules:
     - host: api-dev.kellyclould.com   # ✅【ALB路由主机头匹配规则】
