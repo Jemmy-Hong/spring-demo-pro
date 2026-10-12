@@ -31,4 +31,3 @@ patches:
 
 images:
   - name: backend-image
-    newName: full_image_addr
