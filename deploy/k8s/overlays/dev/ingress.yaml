@@ -6,11 +6,12 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: hy-backend-ingress
+  namespace: dev
   annotations:
-    # ALB控制器版本
-    kubernetes.io/ingress.class: "my-aws-ingress-class"
-    # 内网ALB，不分配公网IP，只能VPC内/VPN访问
+    # 【删掉旧的 kubernetes.io/ingress.class 注解！废弃不用】
+    # 这里是dev环境为了方便调试，暂时改成internal-facing, 在真实情况下使用internal,创建内部alb同时修改子网标签kubernetes.io/role/elb=1
     alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/target-type: ip
     # ACM证书ARN，替换成你ap-southeast-1的证书arn
     alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-southeast-1:650708167380:certificate/f3ede...
     # 只监听443 HTTPS端口
@@ -22,6 +23,7 @@ metadata:
     alb.ingress.kubernetes.io/healthcheck-port: "9010"
     alb.ingress.kubernetes.io/healthcheck-interval-seconds: 15
 spec:
+  ingressClassName: my-aws-ingress-class   # ✅ 新版标准，替换废弃annotation
   rules:
     - host: api-dev.kellyclould.com
       http:
@@ -30,6 +32,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: hy-demo-project
+                name: hy-demo-project-svc   # ⚠️！！！注意：你的service名字是 hy‑demo‑project‑svc，不是hy‑demo‑project
                 port:
                   number: 9010
