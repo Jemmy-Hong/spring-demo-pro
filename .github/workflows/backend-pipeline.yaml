@@ -124,11 +124,10 @@ jobs:
           ECR_REGISTRY: ${{ needs.build.outputs.ECR_REGISTRY }}
           IMAGE_TAG: ${{ needs.build.outputs.IMAGE_TAG }}
         run: |
-          cd deploy/k8s/overlays/${{ env.ENV_NAME }}
-          kustomize edit set image backend-image=${ECR_REGISTRY}/${{ env.ECR_REPO }}:${IMAGE_TAG}
+          cd deploy/k8s/overlays/${ENV_NAME}
+          trap 'git checkout kustomization.yaml' EXIT
+          kustomize edit set image backend-image=${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
           kustomize build . | kubectl apply -f -
-          # 回滚文件，恢复原始yaml，防止git检出的文件被修改
-          git checkout kustomization.yaml
 
       # 校验Deployment滚动更新是否成功，等待所有pod就绪，超时时间5分钟
       - name: Verify rollout status
