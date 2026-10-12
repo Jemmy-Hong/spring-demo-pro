@@ -3,3 +3,53 @@ spring:
     name: spring-demo-pro
 server:
   port: 9010
+
+# Actuator 生产最佳配置
+management:
+  endpoints:
+    web:
+      base-path: /actuator # 访问根路径，默认就是/actuator，显式声明便于维护
+      exposure:
+        # 按需开放端点，不要用 * 全部暴露！！生产禁止 *
+        include: health,info,prometheus,metrics
+        exclude: shutdown,beans,env,configprops,mappings # 高危端点直接关闭
+  endpoint:
+    health:
+      show-details: always # 展示健康详情；生产可改为 when-authorized
+      probes:
+        enabled: true # 开启k8s liveness/readiness探针，云原生必备
+    # shutdown 默认关闭，不要打开！如需远程关闭应用，本地测试临时开启，生产禁用
+    shutdown:
+      enabled: false
+  info:
+    env:
+      enabled: true # 读取info环境变量信息
+  metrics:
+    tags:
+      application: ${spring.application.name} # 统一应用标签，prometheus聚合用
+    # 只允许本机/内网访问actuator，禁止公网访问
+    address: 127.0.0.1
+
+# 应用基础信息，会在 /actuator/info 展示
+info:
+  app:
+    name: @project.artifactId@
+    version: @project.version@
+    description: @project.description@
+
+# ===================== Micrometer指标配置（Prometheus/Grafana）=====================
+metrics:
+  tags:
+    application: ${spring.application.name} # 指标自动带上应用名标签，多服务在Grafana里区分实例
+  export:
+    prometheus:
+      enabled: true # 开启prometheus指标导出，默认true，显式写出来方便后续关闭
+
+
+# ===================== 自定义actuator账号密码，真正项目可以从数据库读取或者直接不用 =====================
+# 专门给监控用的账号，不和业务登录账号混用（最佳实践）
+monitor:
+  user:
+    name: admin-monitor
+    password: Monitor@2026
+
