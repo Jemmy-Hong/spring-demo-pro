@@ -126,7 +126,7 @@ jobs:
         run: |
           cd deploy/k8s/overlays/${ENV_NAME}
           trap 'git checkout kustomization.yaml' EXIT
-          kustomize edit set image backend-image=${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
+          kustomize edit set image full_image_addr=${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
           kustomize build . | kubectl apply -f -
 
       # 校验Deployment滚动更新是否成功，等待所有pod就绪，超时时间5分钟
